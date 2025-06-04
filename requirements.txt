@@ -1,0 +1,24 @@
+# Основные зависимости
+torch>=2.0.0
+sentence-transformers>=2.2.0
+numpy>=1.24.0
+pandas>=2.0.0
+scikit-learn>=1.0.0
+
+# Поисковые системы
+qdrant-client>=1.1.0
+elasticsearch>=8.0.0
+
+# Веб-сервис
+flask>=2.0.0
+requests>=2.31.0
+
+# Утилиты
+python-dotenv>=1.0.0
+tqdm>=4.65.0
+
+bert-score
+openpyxl
+
+accelerate>=0.27.0
+transformers>=4.51.0 

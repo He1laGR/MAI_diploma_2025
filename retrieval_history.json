@@ -1,0 +1,30 @@
+[
+  {
+    "timestamp": "2025-05-28T23:25:02.821880",
+    "question": "Что такое корутина в Python?",
+    "category": "python",
+    "difficulty": "medium",
+    "question_type": "theory"
+  },
+  {
+    "timestamp": "2025-05-28T23:25:02.832826",
+    "question": "Что такое микросервисная архитектура?",
+    "category": "python",
+    "difficulty": "high",
+    "question_type": "theory"
+  },
+  {
+    "timestamp": "2025-05-28T23:25:02.843348",
+    "question": "Опишите процесс компиляции в python.",
+    "category": "python",
+    "difficulty": "medium",
+    "question_type": "theory"
+  },
+  {
+    "timestamp": "2025-05-28T23:25:02.852746",
+    "question": "Оцени сложность алгоритмов\n\n1) for i in n:\n    something\n\n2) \nfor i in n:\n    something\nfor j in n:\n    something\n\n3) for i in n:\n       for j in i:\n        something",
+    "category": "python",
+    "difficulty": "medium",
+    "question_type": "case"
+  }
+]

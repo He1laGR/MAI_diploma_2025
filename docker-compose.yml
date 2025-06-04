@@ -1,0 +1,88 @@
+version: '3.8'
+
+services:
+  # Основное приложение
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "7860:7860"  # Gradio порт
+    volumes:
+      - ./data:/app/data
+      - ./qdrant:/app/qdrant
+      - ./elasticsearch:/app/elasticsearch
+      - ./model:/app/model
+    environment:
+      - ELASTICSEARCH_URL=http://elasticsearch:9200
+      - QDRANT_URL=http://qdrant:6333
+    depends_on:
+      - elasticsearch
+      - qdrant
+      - model_manager
+      - embedding_service
+      - generation_service
+
+  # Elasticsearch
+  elasticsearch:
+    image: elasticsearch:8.13.0
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+
+  # Qdrant
+  qdrant:
+    image: qdrant/qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  # Model Manager Service
+  model_manager:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python retrieval/model_manager.py
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./model:/app/model
+    environment:
+      - CACHE_DIR=/app/model
+
+  # Embedding Service
+  embedding_service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python retrieval/embedding_service.py
+    ports:
+      - "5001:5001"
+    volumes:
+      - ./model:/app/model
+    environment:
+      - CACHE_DIR=/app/model
+
+  # Generation Service
+  generation_service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python generation/generation_service.py
+    ports:
+      - "5002:5002"
+    volumes:
+      - ./model:/app/model
+    environment:
+      - CACHE_DIR=/app/model
+
+volumes:
+  elasticsearch_data:
+  qdrant_data: 
