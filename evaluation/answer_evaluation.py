@@ -34,7 +34,7 @@ def bert_score_eval(
         [user_answer],
         [reference_answer],
         lang=lang,
-        rescale_with_baseline=True  # Нормализация оценок
+        rescale_with_baseline=True
     )
     
     if return_all:
@@ -74,32 +74,44 @@ def tfidf_evaluation(
     if not key_terms:
         return {'similarity': 0.0, 'term_coverage': 0.0, 'tfidf_sum': 0.0}
     
-    # Создаем векторизатор с ключевыми терминами
-    vectorizer = TfidfVectorizer(vocabulary=key_terms)
+    # Очищаем ключевые термины от пробелов и дубликатов
+    key_terms = [term.strip() for term in key_terms if term.strip()]
+    key_terms = list(set(key_terms))  
     
-    # Получаем TF-IDF матрицы
-    tfidf_matrix = vectorizer.fit_transform([user_answer, reference_answer])
+    if not key_terms:
+        return {'similarity': 0.0, 'term_coverage': 0.0, 'tfidf_sum': 0.0}
     
-    # Вычисляем косинусное сходство
-    similarity = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:2])[0][0]
+    try:
+        # Создаем векторизатор с ключевыми терминами
+        vectorizer = TfidfVectorizer(vocabulary=key_terms)
+        
+        # Получаем TF-IDF матрицы
+        tfidf_matrix = vectorizer.fit_transform([user_answer, reference_answer])
+        
+        # Вычисляем косинусное сходство
+        similarity = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:2])[0][0]
 
-    # Оцениваем покрытие ключевых терминов
-    user_terms = extract_terms(user_answer, key_terms)
-    key_terms_set = set(key_terms)
-    term_coverage = len(user_terms.intersection(key_terms_set)) / len(key_terms_set) if key_terms_set else 0.0
+        # Оцениваем покрытие ключевых терминов
+        user_terms = extract_terms(user_answer, key_terms)
+        key_terms_set = set(key_terms)
+        term_coverage = len(user_terms.intersection(key_terms_set)) / len(key_terms_set) if key_terms_set else 0.0
 
-    tfidf_sum = float(tfidf_matrix[0].sum() / len(key_terms)) if key_terms else 0.0
-    
-    return {
-        'similarity': similarity,
-        'term_coverage': term_coverage,
-        'tfidf_sum': tfidf_sum
-    }
+        tfidf_sum = float(tfidf_matrix[0].sum() / len(key_terms)) if key_terms else 0.0
+        
+        return {
+            'similarity': similarity,
+            'term_coverage': term_coverage,
+            'tfidf_sum': tfidf_sum
+        }
+    except ValueError as e:
+        # В случае ошибки возвращаем нулевые метрики
+        print(f"Ошибка при TF-IDF оценке: {str(e)}")
+        return {'similarity': 0.0, 'term_coverage': 0.0, 'tfidf_sum': 0.0}
 
 def evaluate_answer(
     user_answer: str,
     reference_answer: str,
-    key_terms: Optional[List[str]] = None
+    question: str
 ) -> Dict[str, float]:
     """
     Комплексная оценка ответа пользователя
@@ -107,7 +119,7 @@ def evaluate_answer(
     Args:
         user_answer: Ответ пользователя
         reference_answer: Эталонный ответ
-        key_terms: Список ключевых терминов (опционально)
+        question: Вопрос пользователя
         
     Returns:
         Словарь с оценками по различным метрикам
@@ -118,24 +130,11 @@ def evaluate_answer(
             'bert_precision': 0.0,
             'bert_recall': 0.0,
             'bert_f1': 0.0,
-            'tfidf_similarity': 0.0,
-            'tfidf_coverage': 0.0,
             'final_score': 0.0
         }
     
     if not reference_answer or len(reference_answer.strip()) < 3:
         raise ValueError("Reference answer is too short or empty")
-    
-    # Дополнительная проверка на слишком короткие ответы
-    if len(user_answer.split()) < 3:  
-        return {
-            'bert_precision': 0.0,
-            'bert_recall': 0.0,
-            'bert_f1': 0.0,
-            'tfidf_similarity': 0.0,
-            'tfidf_coverage': 0.0,
-            'final_score': 0.0
-        }
     
     # BERTScore
     bert_precision, bert_recall, bert_f1 = bert_score_eval(
@@ -144,26 +143,24 @@ def evaluate_answer(
         return_all=True
     )
     
-    # TF-IDF оценка
-    tfidf_scores = tfidf_evaluation(user_answer, reference_answer, key_terms)
+    # TF-IDF для оценки технических терминов
+    tfidf_metrics = tfidf_evaluation(
+        user_answer=user_answer,
+        reference_answer=reference_answer
+    )
     
-    # Корректировка BERTScore для коротких ответов
-    if len(user_answer.split()) < 5:  # Если меньше 5 слов
-        bert_f1 *= 0.5  # Уменьшаем вес BERTScore для коротких ответов
-    
-    # Итоговая оценка с учетом длины ответа
-    length_factor = min(1.0, len(user_answer.split()) / 10.0)  # Нормализуем по длине
+    # Комбинированная оценка
     final_score = (
-        0.4 * bert_f1 +  # Уменьшаем вес BERTScore
-        0.4 * tfidf_scores['similarity'] +  # Увеличиваем вес TF-IDF
-        0.2 * tfidf_scores['term_coverage']  # Добавляем вес покрытия терминов
-    ) * length_factor  # Умножаем на фактор длины
+        0.4 * bert_f1 +                      # Семантическое сходство
+        0.2 * tfidf_metrics['similarity'] +  # Сходство по терминам
+        0.2 * tfidf_metrics['term_coverage'] # Покрытие ключевых терминов
+    )
     
     return {
         'bert_precision': bert_precision,
         'bert_recall': bert_recall,
         'bert_f1': bert_f1,
-        'tfidf_similarity': tfidf_scores['similarity'],
-        'tfidf_coverage': tfidf_scores['term_coverage'],
+        'tfidf_similarity': tfidf_metrics['similarity'],
+        'term_coverage': tfidf_metrics['term_coverage'],
         'final_score': final_score
     } 

@@ -16,9 +16,10 @@ requests>=2.31.0
 # Утилиты
 python-dotenv>=1.0.0
 tqdm>=4.65.0
-
-bert-score
 openpyxl
 
+# Оценка качества
+bert-score
+rouge-score>=0.1.2
 accelerate>=0.27.0
-transformers>=4.51.0 
+transformers>=4.51.0

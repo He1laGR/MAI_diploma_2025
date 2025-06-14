@@ -3,6 +3,8 @@ from llama_cpp import Llama
 import json
 import logging
 import os
+import re
+from evaluation.answer_evaluation import tfidf_evaluation
 
 class LLMFeedbackGenerator:
     _instance = None
@@ -18,20 +20,20 @@ class LLMFeedbackGenerator:
     def __init__(self, model_path: str = None):
         """Инициализация модели Vikhr
         Args:
-            model_path: Путь к модели (опционально)
+            model_path: Путь к модели
         """
         if self._model is None:
             logging.info("Инициализация модели Vikhr")
             try:
-                # Сначала пробуем загрузить локально, если путь указан
+                # Сначала пробуем загрузить локально
                 if model_path and os.path.exists(model_path):
                     logging.info(f"Попытка загрузки локальной модели из {model_path}")
                     self._model = Llama(
                         model_path=model_path,
                         n_ctx=4096,
                         n_batch=512,
-                        n_threads=4, 
-                        n_gpu_layers=0,
+                        n_threads=8, 
+                        n_gpu_layers=24,
                         verbose=False
                     )
                     logging.info("Модель Vikhr загружена локально")
@@ -45,10 +47,10 @@ class LLMFeedbackGenerator:
                         repo_id="oblivious/Vikhr-7B-instruct-GGUF",
                         filename="Vikhr-7B-instruct-Q4_K_M.gguf",
                         cache_dir=cache_dir,
-                        n_ctx=2048,
+                        n_ctx=4096,
                         n_batch=512,
-                        n_threads=4,  
-                        n_gpu_layers=0,
+                        n_threads=8,  
+                        n_gpu_layers=24,
                         verbose=False
                     )
                     logging.info("Модель Vikhr загружена через from_pretrained")
@@ -56,51 +58,162 @@ class LLMFeedbackGenerator:
                 logging.error(f"Ошибка при загрузке модели: {str(e)}")
                 raise ValueError(f"Не удалось загрузить модель: {str(e)}")
         
+    def _extract_key_phrases(self, text: str) -> set:
+        """Извлекает ключевые фразы и термины из текста"""
+        # Убираем знаки препинания и приводим к нижнему регистру
+        text = re.sub(r'[^\w\s]', ' ', text.lower())
+        
+        # Извлекаем слова длиннее 2 символов
+        words = [word for word in text.split() if len(word) > 2]
+        
+        # Создаем множество уникальных слов
+        word_set = set(words)
+        
+        # Извлекаем биграммы
+        bigrams = set()
+        for i in range(len(words) - 1):
+            bigram = f"{words[i]} {words[i+1]}"
+            bigrams.add(bigram)
+        
+        return word_set.union(bigrams)
+    
+    def _check_content_relevance(self, user_answer: str, reference_answer: str) -> Dict[str, any]:
+        """Проверяет релевантность ответа пользователя эталонному ответу на основе TF-IDF метрик"""
+        
+        # Извлекаем ключевые фразы для базового анализа
+        user_phrases = self._extract_key_phrases(user_answer)
+        ref_phrases = self._extract_key_phrases(reference_answer)
+        
+        # Находим пересечение фраз
+        common_phrases = user_phrases.intersection(ref_phrases)
+        
+        # Вычисляем коэффициент пересечения фраз
+        if len(ref_phrases) == 0:
+            phrase_overlap_ratio = 0.0
+        else:
+            phrase_overlap_ratio = len(common_phrases) / len(ref_phrases)
+        
+        # Получаем TF-IDF метрики
+        try:
+            tfidf_metrics = tfidf_evaluation(user_answer, reference_answer)
+            tfidf_similarity = tfidf_metrics['similarity']
+            term_coverage = tfidf_metrics['term_coverage']
+        except:
+            tfidf_similarity = 0.0
+            term_coverage = 0.0
+        
+        # Проверяем длину ответа
+        word_count = len(user_answer.split())
+        
+        # Определяем тип ответа на основе метрик
+        is_too_short = word_count < 5
+        is_no_technical_terms = tfidf_similarity < 0.2 and term_coverage < 0.2
+        is_low_relevance = phrase_overlap_ratio < 0.1 and tfidf_similarity < 0.1
+        
+        # Определяем нужен ли специальный промпт
+        needs_special_prompt = is_too_short or is_no_technical_terms or is_low_relevance
+        
+        return {
+            'word_count': word_count,
+            'phrase_overlap_ratio': phrase_overlap_ratio,
+            'tfidf_similarity': tfidf_similarity,
+            'term_coverage': term_coverage,
+            'common_phrases': common_phrases,
+            'is_too_short': is_too_short,
+            'is_no_technical_terms': is_no_technical_terms,
+            'is_low_relevance': is_low_relevance,
+            'needs_special_prompt': needs_special_prompt
+        }
+
     def _create_prompt(
         self,
         answer: str,
         reference_answer: str,
-        key_terms: List[str],
         category: str,
         question_type: str,
         scores: Dict[str, float]
     ) -> str:
         """Создание промпта для генерации фидбека"""
         
-        system_prompt = """Ты — эксперт по проведению технических собеседований. Твоя задача - давать краткий и конкретный фидбек на русском языке, сравнивая ответ с эталонным ответом.
+        # Анализируем релевантность ответа
+        relevance_check = self._check_content_relevance(answer, reference_answer)
+        
+        if relevance_check['needs_special_prompt']:
+            # Промпт для нерелевантных/бессмысленных ответов
+            system_prompt = """Ты — эксперт по проведению технических собеседований. 
+Ответ кандидата не содержит релевантной технической информации по теме вопроса.
+Твоя задача - дать честный и конструктивный фидбек.
+
+Требования:
+- Честно укажи, что ответ не соответствует теме вопроса
+- Не придумывай технические термины, которых нет в ответе
+- Будь конкретным и конструктивным
+- Дай практические рекомендации для улучшения"""
+            
+            if relevance_check['is_too_short']:
+                feedback_type = "слишком краткий"
+            elif relevance_check['is_no_technical_terms']:
+                feedback_type = "без технических терминов"
+            else:
+                feedback_type = "не по теме"
+            
+            user_prompt = f"""Ответ кандидата: "{answer}"
+Эталонный ответ: "{reference_answer}"
+Тип проблемы: ответ {feedback_type}
+TF-IDF сходство: {relevance_check['tfidf_similarity']:.2f}
+Покрытие терминов: {relevance_check['term_coverage']:.2f}
+
+Сгенерируй честный фидбек:
+
+Сильные стороны:
+- Нет технически релевантных аспектов для оценки
+
+Что улучшить:
+- Ответ не содержит технической информации по теме вопроса
+- Необходимо дать развернутый ответ, соответствующий теме
+
+Рекомендации:
+- Изучить основные концепции темы
+- Дать конкретный технический ответ с примерами и объяснениями"""
+        
+        else:
+            # Промпт для релевантных ответов
+            system_prompt = """Ты — эксперт по проведению технических собеседований. 
+Твоя задача - давать краткий и конкретный фидбек на русском языке, сравнивая ответ с эталонным ответом.
+
 Требования к фидбеку:
 - Всегда сравнивай ответ кандидата с эталонным ответом
-- Кратко (не более 2 предложений в каждом пункте)
+- Кратко (не более 2 предложений в каждом пункте)  
 - Конкретно (не используй общие слова, а конкретизируй)
 - НЕ повторяй одни и те же мысли в разных формулировках
 - НЕ генерируй больше 2 пунктов в каждом разделе
-- НЕ приписывай того, чего нет в его ответе
+- НЕ приписывай того, чего нет в ответе кандидата
 - Оценивай ТОЛЬКО то, что реально написано в ответе
-- Если ответ слишком краткий, укажи это в фидбеке
+- Если ответ неполный, укажи конкретно чего не хватает
 - НЕ используй нумерацию пунктов
 - Используй простые короткие предложения
-- НЕ используй скобки и дополнительные пояснения
-- НЕ приписывай термины, которых нет в ответе
-- НЕ используй сложные технические термины
-- Рекомендации должны быть основаны на реальном ответе"""
+- Рекомендации должны быть основаны на сравнении с эталонным ответом"""
 
-        user_prompt = f"""Ответ: {answer}
-Эталонный ответ: {reference_answer}
-Ключевые термины: {', '.join(key_terms)}
+            overlap_info = f"""Пересечение с эталоном: {relevance_check['phrase_overlap_ratio']:.1%}
+TF-IDF сходство: {relevance_check['tfidf_similarity']:.2f}
+Покрытие терминов: {relevance_check['term_coverage']:.2f}"""
+            
+            user_prompt = f"""Ответ кандидата: "{answer}"
+Эталонный ответ: "{reference_answer}"
+{overlap_info}
 
 Структура фидбека:
 Сильные стороны:
-- Какие аспекты из эталонного ответа затронуты
+- Какие конкретные аспекты из эталонного ответа правильно отражены в ответе кандидата
 
 Что улучшить:
-- Какие неточности в сравнении с эталонным ответом
+- Какие важные концепции из эталонного ответа отсутствуют в ответе кандидата
 
 Рекомендации:
-- Как дополнить ответ, опираясь на эталонный ответ
+- Как конкретно дополнить ответ, основываясь на эталонном ответе
 
-Сгенерируй фидбек согласно структуре, сравнивая ответ с эталонным ответом."""
+Сгенерируй фидбек согласно структуре, сравнивая ответ кандидата с эталонным ответом."""
 
-        # Форматируем промпт в формате Vikhr
         prompt = f"<s>system\n{system_prompt}</s>\n<s>user\n{user_prompt}</s>\n<s>bot\n"
         return prompt
 
@@ -108,7 +221,6 @@ class LLMFeedbackGenerator:
         self,
         answer: str,
         reference_answer: str,
-        key_terms: List[str],
         category: str,
         question_type: str,
         scores: Dict[str, float]
@@ -118,7 +230,6 @@ class LLMFeedbackGenerator:
         prompt = self._create_prompt(
             answer=answer,
             reference_answer=reference_answer,
-            key_terms=key_terms,
             category=category,
             question_type=question_type,
             scores=scores
@@ -127,7 +238,7 @@ class LLMFeedbackGenerator:
         logging.info("Начало генерации фидбека")
         response = self._model.create_completion(
             prompt=prompt,
-            max_tokens=512,  
+            max_tokens=256,  
             temperature=0.1,  
             top_p=0.9,
             top_k=20, 
